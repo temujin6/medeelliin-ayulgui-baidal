@@ -1,0 +1,32 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  password       String
+
+  // Brute-force protection
+  failedAttempts Int       @default(0)
+  isBlocked      Boolean   @default(false)
+
+  // OTP — used for both login 2FA and account unblock
+  otpCode        String?
+  otpExpiry      DateTime?
+  otpType        OtpType?
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+enum OtpType {
+  LOGIN   // OTP sent after correct password (email 2FA)
+  UNBLOCK // OTP sent when account is blocked
+}
