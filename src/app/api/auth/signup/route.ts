@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { pool } from "@/lib/db";
+import type { RowDataPacket } from "mysql2";
 
 const SignupSchema = z.object({
   email: z.email({ error: "Invalid email address." }),
@@ -18,7 +19,7 @@ export async function POST(request: NextRequest) {
     const parsed = SignupSchema.safeParse(body);
 
     if (!parsed.success) {
-      const errors = parsed.error.flatten().fieldErrors;
+      const errors = z.flattenError(parsed.error).fieldErrors;
       return NextResponse.json({ errors }, { status: 400 });
     }
 
@@ -26,11 +27,11 @@ export async function POST(request: NextRequest) {
     const normalizedEmail = email.toLowerCase();
 
     // Check for duplicate email
-    const existing = await prisma.user.findUnique({
-      where: { email: normalizedEmail },
-      select: { id: true },
-    });
-    if (existing) {
+    const [existing] = await pool.execute<RowDataPacket[]>(
+      "SELECT id FROM users WHERE email = ?",
+      [normalizedEmail]
+    );
+    if (existing.length > 0) {
       return NextResponse.json(
         { message: "An account with this email already exists." },
         { status: 409 }
@@ -40,9 +41,10 @@ export async function POST(request: NextRequest) {
     // Hash password with bcrypt (cost factor 12)
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    await prisma.user.create({
-      data: { email: normalizedEmail, password: hashedPassword },
-    });
+    await pool.execute(
+      "INSERT INTO users (email, password) VALUES (?, ?)",
+      [normalizedEmail, hashedPassword]
+    );
 
     return NextResponse.json(
       { message: "Account created successfully. You can now log in." },

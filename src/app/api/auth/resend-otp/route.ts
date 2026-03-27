@@ -1,15 +1,22 @@
 // Resend OTP — for both login 2FA and account-unlock scenarios
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { pool } from "@/lib/db";
 import { generateOtp, otpExpiry } from "@/lib/auth";
 import { sendOtpEmail } from "@/lib/mailer";
-import { OtpType } from "@/generated/prisma/enums";
+import { OtpType } from "@/lib/otp-type";
+import type { RowDataPacket } from "mysql2";
 
 const ResendSchema = z.object({
   email: z.email({ error: "Invalid email." }),
   type: z.enum(["login", "unblock"]),
 });
+
+interface UserRow extends RowDataPacket {
+  id: number;
+  is_blocked: number;
+  otp_type: "LOGIN" | "UNBLOCK" | null;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -18,7 +25,7 @@ export async function POST(request: NextRequest) {
 
     if (!parsed.success) {
       return NextResponse.json(
-        { errors: parsed.error.flatten().fieldErrors },
+        { errors: z.flattenError(parsed.error).fieldErrors },
         { status: 400 }
       );
     }
@@ -26,10 +33,11 @@ export async function POST(request: NextRequest) {
     const { email, type } = parsed.data;
     const normalizedEmail = email.toLowerCase();
 
-    const user = await prisma.user.findUnique({
-      where: { email: normalizedEmail },
-      select: { id: true, isBlocked: true, otpType: true },
-    });
+    const [rows] = await pool.execute<UserRow[]>(
+      "SELECT id, is_blocked, otp_type FROM users WHERE email = ?",
+      [normalizedEmail]
+    );
+    const user = rows[0] ?? null;
 
     // Always respond with success to prevent user enumeration
     if (!user) {
@@ -39,10 +47,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Validate that the requested resend type matches the account state
-    const expectedType =
-      type === "login" ? OtpType.LOGIN : OtpType.UNBLOCK;
+    const expectedType = type === "login" ? OtpType.LOGIN : OtpType.UNBLOCK;
 
-    if (user.otpType !== expectedType) {
+    if (user.otp_type !== expectedType) {
       return NextResponse.json(
         { message: "No pending verification of that type for this account." },
         { status: 400 }
@@ -52,10 +59,10 @@ export async function POST(request: NextRequest) {
     const otp = generateOtp();
     const expiry = otpExpiry();
 
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { otpCode: otp, otpExpiry: expiry },
-    });
+    await pool.execute(
+      "UPDATE users SET otp_code = ?, otp_expiry = ? WHERE id = ?",
+      [otp, expiry, user.id]
+    );
 
     const isUnblock = type === "unblock";
     await sendOtpEmail({
