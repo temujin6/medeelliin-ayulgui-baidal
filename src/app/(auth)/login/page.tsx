@@ -150,6 +150,15 @@ function LoginForm() {
           </Link>
         </div>
       )}
+
+      <div className="mt-6 pt-6 border-t border-gray-100 text-center">
+        <Link
+          href="/passkey"
+          className="text-sm text-blue-600 hover:underline"
+        >
+          Sign in with a passkey instead →
+        </Link>
+      </div>
     </div>
   );
 }

@@ -9,7 +9,7 @@ import { verifyJwt } from "@/lib/auth";
 const PROTECTED_PREFIXES = ["/dashboard"];
 
 // Routes that should redirect to /dashboard if already authenticated
-const AUTH_ROUTES = ["/login", "/signup", "/verify"];
+const AUTH_ROUTES = ["/login", "/signup", "/verify", "/passkey"];
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
