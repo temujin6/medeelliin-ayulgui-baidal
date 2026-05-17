@@ -1,86 +1,123 @@
-// MySQL data-access helpers for users and their passkeys.
+// Prisma data-access helpers for users and their passkeys.
 // Kept out of any "use server" file so they can be imported freely.
-import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import type { AuthenticatorTransportFuture } from "@simplewebauthn/server";
-import { pool } from "@/lib/db";
+import { prisma } from "@/lib/prisma";
 
-export interface UserRow extends RowDataPacket {
-  id: number;
+export interface UserRow {
+  id: string;
   email: string;
 }
 
-export interface PasskeyRow extends RowDataPacket {
+export interface PasskeyRow {
   id: number;
-  user_id: number;
+  user_id: string;
   credential_id: string;
   credential_public_key: Buffer;
-  counter: string | number; // BIGINT comes back as string
+  counter: string | number;
   transports: string | null;
 }
 
 export async function findUserByEmail(email: string): Promise<UserRow | null> {
-  const [rows] = await pool.execute<UserRow[]>(
-    "SELECT id, email FROM users WHERE email = ?",
-    [email],
-  );
-  return rows[0] ?? null;
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: { id: true, email: true },
+  });
+  return user ? { id: user.id, email: user.email } : null;
 }
 
 export async function createPasskeyUser(email: string): Promise<UserRow> {
-  // password is nullable (see migrations/002_add_passkey.sql) so a
-  // passkey-only account is permitted.
-  const [result] = await pool.execute<ResultSetHeader>(
-    "INSERT INTO users (email, password) VALUES (?, NULL)",
-    [email],
-  );
-  return { id: result.insertId, email } as UserRow;
+  const user = await prisma.user.create({
+    data: { email, password: null },
+    select: { id: true, email: true },
+  });
+  return { id: user.id, email: user.email };
 }
 
-export async function listPasskeysForUser(userId: number): Promise<PasskeyRow[]> {
-  const [rows] = await pool.execute<PasskeyRow[]>(
-    "SELECT id, user_id, credential_id, credential_public_key, counter, transports FROM passkeys WHERE user_id = ?",
-    [userId],
+export async function listPasskeysForUser(
+  userId: string,
+): Promise<PasskeyRow[]> {
+  const rows = await prisma.passkey.findMany({
+    where: { userId },
+    select: {
+      id: true,
+      userId: true,
+      credentialId: true,
+      credentialPublicKey: true,
+      counter: true,
+      transports: true,
+    },
+  });
+  return rows.map(
+    (row: {
+      id: number;
+      userId: string;
+      credentialId: string;
+      credentialPublicKey: Buffer;
+      counter: bigint;
+      transports: string | null;
+    }) => ({
+      id: row.id,
+      user_id: row.userId,
+      credential_id: row.credentialId,
+      credential_public_key: Buffer.from(row.credentialPublicKey),
+      counter: row.counter.toString(),
+      transports: row.transports,
+    }),
   );
-  return rows;
 }
 
 export async function findPasskeyByCredentialId(
   credentialId: string,
 ): Promise<PasskeyRow | null> {
-  const [rows] = await pool.execute<PasskeyRow[]>(
-    "SELECT id, user_id, credential_id, credential_public_key, counter, transports FROM passkeys WHERE credential_id = ?",
-    [credentialId],
-  );
-  return rows[0] ?? null;
+  const row = await prisma.passkey.findUnique({
+    where: { credentialId },
+    select: {
+      id: true,
+      userId: true,
+      credentialId: true,
+      credentialPublicKey: true,
+      counter: true,
+      transports: true,
+    },
+  });
+
+  if (!row) return null;
+  return {
+    id: row.id,
+    user_id: row.userId,
+    credential_id: row.credentialId,
+    credential_public_key: Buffer.from(row.credentialPublicKey),
+    counter: row.counter.toString(),
+    transports: row.transports,
+  };
 }
 
 export async function insertPasskey(args: {
-  userId: number;
+  userId: string;
   credentialId: string;
   publicKey: Uint8Array;
   counter: number;
   transports?: AuthenticatorTransportFuture[];
 }): Promise<void> {
-  await pool.execute(
-    "INSERT INTO passkeys (user_id, credential_id, credential_public_key, counter, transports) VALUES (?, ?, ?, ?, ?)",
-    [
-      args.userId,
-      args.credentialId,
-      Buffer.from(args.publicKey),
-      args.counter,
-      args.transports?.join(",") ?? null,
-    ],
-  );
+  await prisma.passkey.create({
+    data: {
+      userId: args.userId,
+      credentialId: args.credentialId,
+      credentialPublicKey: Buffer.from(args.publicKey),
+      counter: BigInt(args.counter),
+      transports: args.transports?.join(",") ?? null,
+    },
+  });
 }
 
 export async function updatePasskeyCounter(
   passkeyId: number,
   newCounter: number,
 ): Promise<void> {
-  await pool.execute("UPDATE passkeys SET counter = ? WHERE id = ?", [
-    newCounter,
-    passkeyId,
-  ]);
+  await prisma.passkey.update({
+    where: { id: passkeyId },
+    data: { counter: BigInt(newCounter) },
+  });
 }
 
 export function parseTransports(

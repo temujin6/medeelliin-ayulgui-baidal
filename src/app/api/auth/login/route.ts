@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { pool } from "@/lib/db";
+import { prisma } from "@/lib/prisma";
 import { generateOtp, otpExpiry } from "@/lib/auth";
 import { sendOtpEmail } from "@/lib/mailer";
 import { OtpType } from "@/lib/otp-type";
-import type { RowDataPacket } from "mysql2";
 
 const MAX_FAILED_ATTEMPTS = 3;
 
@@ -13,14 +12,6 @@ const LoginSchema = z.object({
   email: z.email({ error: "Invalid email address." }),
   password: z.string().min(1, { error: "Password is required." }),
 });
-
-interface UserRow extends RowDataPacket {
-  id: number;
-  email: string;
-  password: string;
-  failed_attempts: number;
-  is_blocked: number; // TINYINT(1): 0 or 1
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -35,29 +26,34 @@ export async function POST(request: NextRequest) {
     const { email, password } = parsed.data;
     const normalizedEmail = email.toLowerCase();
 
-    const [rows] = await pool.execute<UserRow[]>(
-      "SELECT id, email, password, failed_attempts, is_blocked FROM users WHERE email = ?",
-      [normalizedEmail]
-    );
-    const user = rows[0] ?? null;
+    const user = await prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: {
+        id: true,
+        email: true,
+        password: true,
+        failedAttempts: true,
+        isBlocked: true,
+      },
+    });
 
     // Use a generic message to avoid user enumeration
-    if (!user) {
+    if (!user || !user.password) {
       return NextResponse.json(
         { message: "Invalid email or password." },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
     // ── Account is already blocked ──────────────────────────────────────────
-    if (user.is_blocked) {
+    if (user.isBlocked) {
       return NextResponse.json(
         {
           status: "blocked",
           message:
             "Account blocked. Enter the OTP sent to your email to unlock it.",
         },
-        { status: 403 }
+        { status: 403 },
       );
     }
 
@@ -65,17 +61,23 @@ export async function POST(request: NextRequest) {
     const passwordMatch = await bcrypt.compare(password, user.password);
 
     if (!passwordMatch) {
-      const newAttempts = user.failed_attempts + 1;
+      const newAttempts = user.failedAttempts + 1;
 
       if (newAttempts >= MAX_FAILED_ATTEMPTS) {
         // Generate an UNBLOCK OTP and lock the account
         const otp = generateOtp();
         const expiry = otpExpiry();
 
-        await pool.execute(
-          "UPDATE users SET failed_attempts = ?, is_blocked = 1, otp_code = ?, otp_expiry = ?, otp_type = ? WHERE id = ?",
-          [newAttempts, otp, expiry, OtpType.UNBLOCK, user.id]
-        );
+        await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            failedAttempts: newAttempts,
+            isBlocked: true,
+            otpCode: otp,
+            otpExpiry: expiry,
+            otpType: OtpType.UNBLOCK,
+          },
+        });
 
         await sendOtpEmail({
           to: user.email,
@@ -90,22 +92,22 @@ export async function POST(request: NextRequest) {
             message:
               "Too many failed attempts. Your account has been locked. Check your email for an unlock code.",
           },
-          { status: 403 }
+          { status: 403 },
         );
       }
 
       // Not yet blocked — update the counter
-      await pool.execute(
-        "UPDATE users SET failed_attempts = ? WHERE id = ?",
-        [newAttempts, user.id]
-      );
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { failedAttempts: newAttempts },
+      });
 
       const remaining = MAX_FAILED_ATTEMPTS - newAttempts;
       return NextResponse.json(
         {
           message: `Invalid password. ${remaining} attempt${remaining !== 1 ? "s" : ""} remaining before your account is locked.`,
         },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -113,10 +115,15 @@ export async function POST(request: NextRequest) {
     const otp = generateOtp();
     const expiry = otpExpiry();
 
-    await pool.execute(
-      "UPDATE users SET failed_attempts = 0, otp_code = ?, otp_expiry = ?, otp_type = ? WHERE id = ?",
-      [otp, expiry, OtpType.LOGIN, user.id]
-    );
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        failedAttempts: 0,
+        otpCode: otp,
+        otpExpiry: expiry,
+        otpType: OtpType.LOGIN,
+      },
+    });
 
     await sendOtpEmail({
       to: user.email,
@@ -134,7 +141,7 @@ export async function POST(request: NextRequest) {
     console.error("[login]", err);
     return NextResponse.json(
       { message: "Internal server error." },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

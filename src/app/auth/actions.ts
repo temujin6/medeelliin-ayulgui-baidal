@@ -74,8 +74,8 @@ async function consumeChallengeCookie(
   return payload.challenge;
 }
 
-async function startSession(userId: number, email: string) {
-  const token = await signJwt({ userId: String(userId), email });
+async function startSession(userId: string, email: string) {
+  const token = await signJwt({ userId, email });
   const jar = await cookies();
   jar.set(SESSION_COOKIE, token, {
     httpOnly: true,
@@ -93,7 +93,8 @@ export async function getRegisterOptions(
 ): Promise<PublicKeyCredentialCreationOptionsJSON> {
   const email = normalize(rawEmail);
 
-  const user = (await findUserByEmail(email)) ?? (await createPasskeyUser(email));
+  const user =
+    (await findUserByEmail(email)) ?? (await createPasskeyUser(email));
   const existing = await listPasskeysForUser(user.id);
 
   const options = await generateRegistrationOptions({
@@ -211,7 +212,10 @@ export async function verifyAuth(
     throw new Error("Authentication could not be verified.");
   }
 
-  await updatePasskeyCounter(passkey.id, verification.authenticationInfo.newCounter);
+  await updatePasskeyCounter(
+    passkey.id,
+    verification.authenticationInfo.newCounter,
+  );
   await startSession(user.id, user.email);
   return { success: true };
 }

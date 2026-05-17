@@ -3,25 +3,16 @@
 //   type: "unblock" — verify the unlock OTP, resets the account block
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { pool } from "@/lib/db";
+import { prisma } from "@/lib/prisma";
 import { signJwt } from "@/lib/auth";
 import { cookies } from "next/headers";
 import { OtpType } from "@/lib/otp-type";
-import type { RowDataPacket } from "mysql2";
 
 const VerifySchema = z.object({
   email: z.email({ error: "Invalid email." }),
   otp: z.string().length(6, { error: "OTP must be 6 digits." }),
   type: z.enum(["login", "unblock"]),
 });
-
-interface UserRow extends RowDataPacket {
-  id: number;
-  email: string;
-  otp_code: string | null;
-  otp_expiry: Date | null;
-  otp_type: "LOGIN" | "UNBLOCK" | null;
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -31,18 +22,23 @@ export async function POST(request: NextRequest) {
     if (!parsed.success) {
       return NextResponse.json(
         { errors: z.flattenError(parsed.error).fieldErrors },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
     const { email, otp, type } = parsed.data;
     const normalizedEmail = email.toLowerCase();
 
-    const [rows] = await pool.execute<UserRow[]>(
-      "SELECT id, email, otp_code, otp_expiry, otp_type FROM users WHERE email = ?",
-      [normalizedEmail]
-    );
-    const user = rows[0] ?? null;
+    const user = await prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: {
+        id: true,
+        email: true,
+        otpCode: true,
+        otpExpiry: true,
+        otpType: true,
+      },
+    });
 
     if (!user) {
       return NextResponse.json({ message: "User not found." }, { status: 404 });
@@ -51,35 +47,41 @@ export async function POST(request: NextRequest) {
     // Make sure the OTP type matches what was requested
     const expectedType = type === "login" ? OtpType.LOGIN : OtpType.UNBLOCK;
 
-    if (!user.otp_code || !user.otp_expiry || user.otp_type !== expectedType) {
+    if (!user.otpCode || !user.otpExpiry || user.otpType !== expectedType) {
       return NextResponse.json(
         { message: "No pending verification for this account." },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
     // Check expiry
-    if (new Date() > user.otp_expiry) {
+    if (new Date() > user.otpExpiry) {
       return NextResponse.json(
         { message: "Verification code has expired. Please request a new one." },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
     // Constant-time comparison to prevent timing attacks
-    if (otp !== user.otp_code) {
+    if (otp !== user.otpCode) {
       return NextResponse.json(
         { message: "Invalid verification code." },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
     // ── OTP is valid — clear it ──────────────────────────────────────────────
     if (type === "unblock") {
-      await pool.execute(
-        "UPDATE users SET is_blocked = 0, failed_attempts = 0, otp_code = NULL, otp_expiry = NULL, otp_type = NULL WHERE id = ?",
-        [user.id]
-      );
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          isBlocked: false,
+          failedAttempts: 0,
+          otpCode: null,
+          otpExpiry: null,
+          otpType: null,
+        },
+      });
 
       return NextResponse.json({
         status: "unblocked",
@@ -88,10 +90,14 @@ export async function POST(request: NextRequest) {
     }
 
     // type === "login": issue JWT session cookie
-    await pool.execute(
-      "UPDATE users SET otp_code = NULL, otp_expiry = NULL, otp_type = NULL WHERE id = ?",
-      [user.id]
-    );
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        otpCode: null,
+        otpExpiry: null,
+        otpType: null,
+      },
+    });
 
     const token = await signJwt({ userId: String(user.id), email: user.email });
 
@@ -113,7 +119,7 @@ export async function POST(request: NextRequest) {
     console.error("[verify]", err);
     return NextResponse.json(
       { message: "Internal server error." },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

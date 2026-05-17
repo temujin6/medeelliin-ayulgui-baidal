@@ -1,6 +1,5 @@
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
@@ -11,7 +10,7 @@ datasource db {
 model User {
   id             String    @id @default(cuid())
   email          String    @unique
-  password       String
+  password       String?
 
   // Brute-force protection
   failedAttempts Int       @default(0)
@@ -22,8 +21,24 @@ model User {
   otpExpiry      DateTime?
   otpType        OtpType?
 
+  passkeys       Passkey[]
+
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+}
+
+model Passkey {
+  id                 Int      @id @default(autoincrement())
+  userId             String
+  credentialId       String   @unique
+  credentialPublicKey Bytes
+  counter            BigInt   @default(0)
+  transports         String?
+  createdAt          DateTime @default(now())
+
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("passkeys")
 }
 
 enum OtpType {
